@@ -87,7 +87,7 @@ install_dependencies() {
                 sudo zypper install -y java-17-openjdk
                 ;;
             arch|manjaro|endeavouros)
-                sudo pacman -S --noconfirm jre17-openjdk
+                sudo pacman -S --noconfirm jre-openjdk
                 ;;
             alpine)
                 sudo apk add openjdk17-jre
