@@ -219,7 +219,7 @@ main() {
     cleanup
 
     print_success "Installation completed successfully!"
-    print_info "To uninstall, run: curl -fsS https://raw.githubusercontent.com/LukasSku/pbo-linux-installer/main/install.sh | bash -s -- --uninstall"
+    print_info "To uninstall, run: curl -fsS https://raw.githubusercontent.com/LukasSku/pbo-linux-installer/refs/heads/main/installer.sh | bash -s -- --uninstall"
 }
 
 trap cleanup EXIT
