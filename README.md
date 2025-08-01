@@ -22,6 +22,8 @@ sudo apk add curl
 
 ## Install
 
+If Java install not work, run with sudo privileges
+
 ```bash
 curl -fsS https://raw.githubusercontent.com/LukasSku/pbo-linux-installer/refs/heads/main/installer.sh | bash
 ```
