@@ -1,6 +1,7 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 
+# Farben
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -8,224 +9,258 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 APP_NAME="Pokemon Blaze Online"
+APP_ID="pbo"
+DOWNLOAD_URL="https://pbo-downloads.s3.eu-central-003.backblazeb2.com/pbo-windows.zip"
 INSTALL_DIR="$HOME/Applications/pbo"
 DESKTOP_FILE="$HOME/.local/share/applications/pbo.desktop"
 TEMP_DIR="/tmp/pbo-installer"
-DOWNLOAD_URL="https://pbo-downloads.s3.eu-central-003.backblazeb2.com/pbo-windows.zip"
 
 print_info()    { echo -e "${BLUE}[INFO]${NC} $1"; }
 print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 print_error()   { echo -e "${RED}[ERROR]${NC} $1"; }
 
+detect_distro() {
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        DISTRO=${ID,,}
+        DISTRO_LIKE=${ID_LIKE,,}
+    else
+        DISTRO="unknown"
+        DISTRO_LIKE="unknown"
+    fi
+    print_info "Detected distribution: $DISTRO (ID_LIKE=$DISTRO_LIKE)"
+}
+
 detect_package_manager() {
-    if command -v apt >/dev/null; then
+    print_info "Detecting package manager..."
+
+    if command -v apt >/dev/null 2>&1; then
         PKG_MGR="apt"
-    elif command -v dnf >/dev/null; then
+        PKG_INSTALL="sudo apt install -y"
+        PKG_UPDATE="sudo apt update"
+    elif command -v dnf >/dev/null 2>&1; then
         PKG_MGR="dnf"
-    elif command -v yum >/dev/null; then
+        PKG_INSTALL="sudo dnf install -y"
+        PKG_UPDATE="sudo dnf check-update || true"
+    elif command -v yum >/dev/null 2>&1; then
         PKG_MGR="yum"
-    elif command -v pacman >/dev/null; then
+        PKG_INSTALL="sudo yum install -y"
+        PKG_UPDATE="sudo yum check-update || true"
+    elif command -v pacman >/dev/null 2>&1; then
         PKG_MGR="pacman"
-    elif command -v zypper >/dev/null; then
+        PKG_INSTALL="sudo pacman -S --noconfirm"
+        PKG_UPDATE="sudo pacman -Sy"
+    elif command -v zypper >/dev/null 2>&1; then
         PKG_MGR="zypper"
-    elif command -v apk >/dev/null; then
+        PKG_INSTALL="sudo zypper install -y"
+        PKG_UPDATE="sudo zypper refresh"
+    elif command -v apk >/dev/null 2>&1; then
         PKG_MGR="apk"
+        PKG_INSTALL="sudo apk add"
+        PKG_UPDATE="sudo apk update"
     else
         PKG_MGR="unknown"
     fi
+
     print_info "Package manager detected: $PKG_MGR"
 }
 
 install_package() {
-    local pkg=$1
-    case "$PKG_MGR" in
-        apt)
-            sudo apt update
-            sudo apt install -y "$pkg"
-            ;;
-        dnf)
-            sudo dnf install -y "$pkg"
-            ;;
-        yum)
-            sudo yum install -y "$pkg"
-            ;;
-        pacman)
-            sudo pacman -Syu --noconfirm "$pkg"
-            ;;
-        zypper)
-            sudo zypper install -y "$pkg"
-            ;;
-        apk)
-            sudo apk add "$pkg"
-            ;;
-        *)
-            print_warning "Kein unterstützter Paketmanager gefunden. Bitte installiere '$pkg' manuell."
-            return 1
-            ;;
-    esac
-}
-
-check_java() {
-    if ! command -v java >/dev/null 2>&1; then
-        return 1
-    fi
-    # Prüfe Java Version (mindestens 17)
-    local ver=$(java -version 2>&1 | head -n1 | grep -oP '"\K[0-9]+')
-    if [[ "$ver" -ge 17 ]]; then
-        return 0
-    else
-        return 1
-    fi
-}
-
-install_java() {
-    print_info "Java 17+ nicht gefunden. Versuche Java zu installieren..."
-
-    case "$PKG_MGR" in
-        apt)
-            sudo apt update
-            sudo apt install -y openjdk-17-jre
-            ;;
-        dnf|yum)
-            sudo "$PKG_MGR" install -y java-17-openjdk
-            ;;
-        pacman)
-            sudo pacman -Syu --noconfirm jre-openjdk
-            ;;
-        zypper)
-            sudo zypper install -y java-17-openjdk
-            ;;
-        apk)
-            sudo apk add openjdk17
-            ;;
-        *)
-            print_warning "Automatische Installation für Java nicht möglich."
-            print_info "Versuche portable OpenJDK von Adoptium zu installieren..."
-
-            install_portable_java
-            ;;
-    esac
-}
-
-install_portable_java() {
-    local jdk_dir="$HOME/.local/java"
-    local jdk_url="https://github.com/adoptium/temurin17-binaries/releases/latest/download/OpenJDK17U-jre_x64_linux_hotspot.tar.gz"
-
-    mkdir -p "$jdk_dir"
-    print_info "Lade OpenJDK 17 von Adoptium herunter..."
-    if command -v curl >/dev/null 2>&1; then
-        curl -L -o "$TEMP_DIR/jdk.tar.gz" "$jdk_url"
-    elif command -v wget >/dev/null 2>&1; then
-        wget -O "$TEMP_DIR/jdk.tar.gz" "$jdk_url"
-    else
-        print_error "Kein curl oder wget verfügbar, kann OpenJDK nicht herunterladen."
+    PACKAGE_NAME="$1"
+    if [ "$PKG_MGR" = "unknown" ]; then
+        print_error "Unsupported Linux distribution or no supported package manager found."
+        print_error "Please install $PACKAGE_NAME manually."
         exit 1
     fi
 
-    print_info "Entpacke OpenJDK..."
-    tar -xzf "$TEMP_DIR/jdk.tar.gz" -C "$jdk_dir" --strip-components=1
-
-    export PATH="$jdk_dir/bin:$PATH"
-    print_success "Portable Java 17 installiert und im PATH hinzugefügt."
+    print_info "Installing $PACKAGE_NAME..."
+    $PKG_UPDATE
+    $PKG_INSTALL "$PACKAGE_NAME"
 }
 
-download_pbo() {
-    print_info "Erstelle temporäres Verzeichnis: $TEMP_DIR"
+check_command() {
+    if ! command -v "$1" >/dev/null 2>&1; then
+        return 1
+    else
+        return 0
+    fi
+}
+
+install_dependencies() {
+    print_info "Checking dependencies..."
+
+    if ! check_command unzip; then
+        install_package unzip
+    else
+        print_success "unzip is already installed."
+    fi
+
+    if ! check_command java; then
+        print_warning "Java not found. Attempting to install OpenJDK 17+."
+
+        case "$PKG_MGR" in
+            apt)
+                install_package openjdk-17-jre
+                ;;
+            dnf|yum)
+                install_package java-17-openjdk
+                ;;
+            pacman)
+                install_package jre-openjdk
+                ;;
+            zypper)
+                install_package java-17-openjdk
+                ;;
+            apk)
+                install_package openjdk17
+                ;;
+            *)
+                print_error "Automatic Java installation not supported on this system."
+                print_error "Please install Java 17 or higher manually."
+                exit 1
+                ;;
+        esac
+
+        # No direct version check here, assume package installs correct version
+    else
+        print_success "Java is already installed."
+        JAVA_VERSION_FULL=$(java -version 2>&1 | head -n1)
+        JAVA_VERSION_NUM=$(echo "$JAVA_VERSION_FULL" | grep -oP '(?<=version ")[^"]+')
+        JAVA_MAJOR=$(echo "$JAVA_VERSION_NUM" | cut -d'.' -f1)
+
+        # Java 8 has versions like "1.8", Java 11+ like "11"
+        if [[ "$JAVA_MAJOR" == "1" ]]; then
+            JAVA_MAJOR=$(echo "$JAVA_VERSION_NUM" | cut -d'.' -f2)
+        fi
+
+        if [ "$JAVA_MAJOR" -lt 17 ]; then
+            print_warning "Detected Java version $JAVA_VERSION_NUM. Java 17 or newer is recommended."
+        fi
+    fi
+}
+
+download_and_extract() {
+    print_info "Preparing temporary directory..."
+    rm -rf "$TEMP_DIR"
     mkdir -p "$TEMP_DIR"
     cd "$TEMP_DIR"
-    print_info "Lade PBO herunter..."
-    if command -v curl >/dev/null 2>&1; then
-        curl -L -o pbo.zip "$DOWNLOAD_URL"
-    elif command -v wget >/dev/null 2>&1; then
-        wget -O pbo.zip "$DOWNLOAD_URL"
+
+    print_info "Downloading $APP_NAME from $DOWNLOAD_URL ..."
+    if check_command curl; then
+        curl -L -o pbo-windows.zip "$DOWNLOAD_URL"
+    elif check_command wget; then
+        wget -O pbo-windows.zip "$DOWNLOAD_URL"
     else
-        print_error "Kein curl oder wget gefunden. Bitte installieren."
+        print_error "Neither curl nor wget found. Please install one of them."
         exit 1
     fi
-}
 
-extract_pbo() {
-    print_info "Entpacke PBO..."
-    unzip -q pbo.zip -d pbo-temp
-    print_info "Entferne Windows .exe Dateien..."
-    find pbo-temp -type f -name "*.exe" -delete
+    print_info "Extracting archive..."
+    unzip -q pbo-windows.zip
+
+    print_info "Removing .exe files..."
+    find . -type f -name "*.exe" -delete
+
+    print_success "Download and extraction completed."
 }
 
 install_pbo() {
-    print_info "Installiere PBO nach $INSTALL_DIR"
-    mkdir -p "$INSTALL_DIR"
-    rm -rf "$INSTALL_DIR"/*
-    mv pbo-temp/* "$INSTALL_DIR"
-}
+    print_info "Creating installation directory..."
+    mkdir -p "$(dirname "$INSTALL_DIR")"
 
-create_desktop_entry() {
-    print_info "Erstelle Desktop-Verknüpfung..."
+    if [ -d "$INSTALL_DIR" ]; then
+        print_warning "Installation directory already exists. Removing old files..."
+        rm -rf "$INSTALL_DIR"
+    fi
 
+    mv pbo-windows "$INSTALL_DIR"
+
+    print_info "Creating desktop entry..."
     mkdir -p "$(dirname "$DESKTOP_FILE")"
 
-    cat > "$DESKTOP_FILE" <<EOF
+    cat > "$DESKTOP_FILE" << EOF
 [Desktop Entry]
 Version=1.0
-Name=$APP_NAME
-Comment=Pokemon Blaze Online Client
-Exec=java -jar "$INSTALL_DIR/pbo.jar"
-Icon=$INSTALL_DIR/pbo.png
-Terminal=false
 Type=Application
+Name=$APP_NAME
+Comment=Pokemon Blaze Online
+Exec=java -jar $INSTALL_DIR/pbo.jar
+Path=$INSTALL_DIR/
+Icon=$INSTALL_DIR/assets/icons/pbo_icon.ico
+Terminal=false
 Categories=Game;
 EOF
 
     chmod +x "$DESKTOP_FILE"
 
     if command -v update-desktop-database >/dev/null 2>&1; then
-        update-desktop-database "$HOME/.local/share/applications/"
+        update-desktop-database "$HOME/.local/share/applications/" || true
     fi
-    print_success "Desktop-Verknüpfung erstellt"
+
+    print_success "$APP_NAME installed successfully!"
+    print_info "Installation directory: $INSTALL_DIR"
+    print_info "Desktop file: $DESKTOP_FILE"
+}
+
+uninstall_pbo() {
+    print_info "Uninstalling $APP_NAME..."
+
+    if [ -d "$INSTALL_DIR" ]; then
+        rm -rf "$INSTALL_DIR"
+        print_success "Removed installation directory: $INSTALL_DIR"
+    else
+        print_warning "Installation directory not found: $INSTALL_DIR"
+    fi
+
+    if [ -f "$DESKTOP_FILE" ]; then
+        rm -f "$DESKTOP_FILE"
+        print_success "Removed desktop entry: $DESKTOP_FILE"
+    else
+        print_warning "Desktop entry not found: $DESKTOP_FILE"
+    fi
+
+    if command -v update-desktop-database >/dev/null 2>&1; then
+        update-desktop-database "$HOME/.local/share/applications/" || true
+    fi
+
+    print_success "$APP_NAME uninstalled successfully!"
 }
 
 cleanup() {
-    print_info "Bereinige temporäre Dateien..."
-    rm -rf "$TEMP_DIR"
+    if [ -d "$TEMP_DIR" ]; then
+        rm -rf "$TEMP_DIR"
+        print_info "Cleaned up temporary files."
+    fi
 }
 
 main() {
-    print_info "Starte Installation von $APP_NAME..."
+    print_info "Starting $APP_NAME installer..."
 
-    detect_package_manager
-
-    # Grundtools prüfen
-    for tool in unzip curl java; do
-        if ! command -v "$tool" >/dev/null 2>&1; then
-            if [ "$tool" = "java" ]; then
-                print_warning "Java nicht gefunden"
-            else
-                print_info "Installiere fehlendes Tool: $tool"
-                install_package "$tool" || print_warning "Bitte installiere $tool manuell"
-            fi
-        fi
-    done
-
-    # Java Version prüfen
-    if ! check_java; then
-        install_java
-        if ! check_java; then
-            print_error "Java 17+ konnte nicht installiert werden. Bitte manuell installieren."
-            exit 1
-        fi
-    else
-        print_success "Java 17+ ist installiert"
+    if [[ "${1:-}" == "--uninstall" ]] || [[ "${1:-}" == "-u" ]]; then
+        uninstall_pbo
+        exit 0
     fi
 
-    download_pbo
-    extract_pbo
+    detect_distro
+    detect_package_manager
+
+    if [ "$PKG_MGR" = "unknown" ]; then
+        print_error "Unsupported Linux distribution or no supported package manager found."
+        print_error "Please install dependencies manually and rerun this script."
+        exit 1
+    fi
+
+    install_dependencies
+    download_and_extract
     install_pbo
-    create_desktop_entry
     cleanup
 
-    print_success "$APP_NAME wurde erfolgreich installiert!"
-    print_info "Starte das Spiel mit: java -jar $INSTALL_DIR/pbo.jar"
+    print_success "Installation completed successfully!"
+    print_info "To uninstall, run:"
+    echo "curl -fsS https://raw.githubusercontent.com/LukasSku/pbo-linux-installer/refs/heads/main/installer.sh | bash -s -- --uninstall"
 }
 
 trap cleanup EXIT
+
 main "$@"
