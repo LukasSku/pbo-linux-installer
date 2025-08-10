@@ -24,14 +24,14 @@ detect_distro() {
     if [ -f /etc/os-release ]; then
         . /etc/os-release
         DISTRO=${ID,,}
-        DISTRO_LIKE=${ID_LIKE,,}
+        DISTRO_LIKE=${ID_LIKE:-}
+        DISTRO_LIKE=${DISTRO_LIKE,,}
     else
         DISTRO="unknown"
-        DISTRO_LIKE="unknown"
+        DISTRO_LIKE=""
     fi
     print_info "Detected distribution: $DISTRO (ID_LIKE=$DISTRO_LIKE)"
 }
-
 detect_package_manager() {
     print_info "Detecting package manager..."
 
