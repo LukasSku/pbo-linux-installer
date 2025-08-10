@@ -22,16 +22,23 @@ print_error()   { echo -e "${RED}[ERROR]${NC} $1"; }
 
 detect_distro() {
     if [ -f /etc/os-release ]; then
+        # source /etc/os-release ohne Fehler bei unset Variablen
+        # zuerst Variablen leer setzen
+        DISTRO=""
+        DISTRO_LIKE=""
+        # shellcheck disable=SC1091
         . /etc/os-release
-        DISTRO=${ID,,}
+        DISTRO=${ID:-unknown}
+        DISTRO=${DISTRO,,}  # to lowercase
         DISTRO_LIKE=${ID_LIKE:-}
-        DISTRO_LIKE=${DISTRO_LIKE,,}
+        DISTRO_LIKE=${DISTRO_LIKE,,}  # to lowercase, evtl leer
     else
         DISTRO="unknown"
         DISTRO_LIKE=""
     fi
     print_info "Detected distribution: $DISTRO (ID_LIKE=$DISTRO_LIKE)"
 }
+
 detect_package_manager() {
     print_info "Detecting package manager..."
 
@@ -121,15 +128,13 @@ install_dependencies() {
                 exit 1
                 ;;
         esac
-
-        # No direct version check here, assume package installs correct version
     else
         print_success "Java is already installed."
         JAVA_VERSION_FULL=$(java -version 2>&1 | head -n1)
         JAVA_VERSION_NUM=$(echo "$JAVA_VERSION_FULL" | grep -oP '(?<=version ")[^"]+')
         JAVA_MAJOR=$(echo "$JAVA_VERSION_NUM" | cut -d'.' -f1)
 
-        # Java 8 has versions like "1.8", Java 11+ like "11"
+        # Java 8 hat Versionsnummern wie 1.8, neuere Java-Versionen wie 11, 17 etc.
         if [[ "$JAVA_MAJOR" == "1" ]]; then
             JAVA_MAJOR=$(echo "$JAVA_VERSION_NUM" | cut -d'.' -f2)
         fi
@@ -258,7 +263,7 @@ main() {
 
     print_success "Installation completed successfully!"
     print_info "To uninstall, run:"
-    echo "curl -fsS https://raw.githubusercontent.com/LukasSku/pbo-linux-installer/refs/heads/main/installer.sh | bash -s -- --uninstall"
+    echo "curl -fsSL https://raw.githubusercontent.com/LukasSku/pbo-linux-installer/refs/heads/main/installer.sh | bash -s -- --uninstall"
 }
 
 trap cleanup EXIT
