@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Farbcode für Ausgaben
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -13,7 +14,6 @@ INSTALL_DIR="$HOME/Applications/pbo"
 DESKTOP_FILE="$HOME/.local/share/applications/pbo.desktop"
 TEMP_DIR="$(mktemp -d /tmp/pbo-installer-XXXX)"
 TEMURIN_DIR="/opt/temurin-17"
-FORCE=false
 
 print_info()    { echo -e "${BLUE}[INFO]${NC} $1"; }
 print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
@@ -29,14 +29,21 @@ trap cleanup EXIT INT TERM
 
 detect_distro() {
     if [ -f /etc/os-release ]; then
+        # shellcheck disable=SC1091
         . /etc/os-release
         DISTRO=${ID,,}
-        DISTRO_LIKE=${ID_LIKE:-}
+        DISTRO_LIKE=${ID_LIKE,,}
+        # Falls ID_LIKE leer: Spezielle Behandlung
+        if [[ -z "$DISTRO_LIKE" ]]; then
+            if [[ "$DISTRO" == "cachyos" ]]; then
+                DISTRO_LIKE="arch"
+            fi
+        fi
     else
         DISTRO="unknown"
         DISTRO_LIKE=""
     fi
-    print_info "Detected distribution: $DISTRO (ID_LIKE=${DISTRO_LIKE})"
+    print_info "Detected distribution: $DISTRO (ID_LIKE=$DISTRO_LIKE)"
 }
 
 has_cmd() {
@@ -44,84 +51,107 @@ has_cmd() {
 }
 
 install_pkg_generic() {
-    # install_pkg_generic <package_hint> <pkg_name_for_apt> <pkg_name_for_dnf> <pkg_name_for_pacman> <pkg_name_for_zypper> <pkg_name_for_apk>
-    local hint="$1"; shift
-    local apt_pkg="$1"; shift || true
-    local dnf_pkg="$1"; shift || true
-    local pacman_pkg="$1"; shift || true
-    local zypper_pkg="$1"; shift || true
-    local apk_pkg="$1"; shift || true
+    # install_pkg_generic <command_hint> <apt_pkg> <dnf_pkg> <pacman_pkg> <zypper_pkg> <apk_pkg>
+    local cmd_hint="$1"; shift
+    local apt_pkg="$1"; shift
+    local dnf_pkg="$1"; shift
+    local pacman_pkg="$1"; shift
+    local zypper_pkg="$1"; shift
+    local apk_pkg="$1"; shift
 
-    # If command already exists by hint, skip
-    if has_cmd "$hint"; then
-        print_success "$hint is already available"
+    if has_cmd "$cmd_hint"; then
+        print_success "$cmd_hint is already installed"
         return 0
     fi
 
-    print_info "Trying to install package for '$hint'..."
+    print_info "Attempting to install '$cmd_hint' via package manager..."
 
     case "$DISTRO" in
-        ubuntu|debian|pop|mint|elementary)
+        ubuntu|debian|pop|linuxmint|elementary)
             if [ -n "$apt_pkg" ]; then
                 sudo apt-get update -y
-                sudo apt-get install -y "$apt_pkg"
+                if ! sudo apt-get install -y "$apt_pkg"; then
+                    print_warning "apt install of $apt_pkg failed."
+                    return 1
+                fi
             fi
             ;;
         fedora|rhel|centos)
             if [ -n "$dnf_pkg" ]; then
-                sudo dnf install -y "$dnf_pkg"
+                if ! sudo dnf install -y "$dnf_pkg"; then
+                    print_warning "dnf install of $dnf_pkg failed."
+                    return 1
+                fi
             fi
             ;;
         opensuse*|sles)
             if [ -n "$zypper_pkg" ]; then
-                sudo zypper install -y "$zypper_pkg"
+                if ! sudo zypper install -y "$zypper_pkg"; then
+                    print_warning "zypper install of $zypper_pkg failed."
+                    return 1
+                fi
             fi
             ;;
         arch|manjaro|endeavouros|garuda|arcolinux|cachyos)
             if [ -n "$pacman_pkg" ]; then
-                sudo pacman -Sy --noconfirm "$pacman_pkg"
+                sudo pacman -Sy --noconfirm "$pacman_pkg" || {
+                    print_warning "pacman install of $pacman_pkg failed."
+                    return 1
+                }
             fi
             ;;
         alpine)
             if [ -n "$apk_pkg" ]; then
-                sudo apk add "$apk_pkg"
+                if ! sudo apk add --no-cache "$apk_pkg"; then
+                    print_warning "apk add of $apk_pkg failed."
+                    return 1
+                fi
             fi
             ;;
         *)
-            # try using ID_LIKE heuristics
+            # Versuche anhand ID_LIKE heuristisch
             if [[ "$DISTRO_LIKE" == *"debian"* ]] && [ -n "$apt_pkg" ]; then
                 sudo apt-get update -y
-                sudo apt-get install -y "$apt_pkg"
+                if ! sudo apt-get install -y "$apt_pkg"; then
+                    print_warning "apt install of $apt_pkg failed."
+                    return 1
+                fi
             elif [[ "$DISTRO_LIKE" == *"arch"* ]] && [ -n "$pacman_pkg" ]; then
-                sudo pacman -Sy --noconfirm "$pacman_pkg"
+                sudo pacman -Sy --noconfirm "$pacman_pkg" || {
+                    print_warning "pacman install of $pacman_pkg failed."
+                    return 1
+                }
             else
-                print_warning "Unsupported distribution for automatic installation of $hint (DISTRO=$DISTRO)."
+                print_warning "Unsupported distro $DISTRO for installing $cmd_hint"
+                return 1
             fi
             ;;
     esac
 
-    if has_cmd "$hint"; then
-        print_success "Installed/available: $hint"
+    # nochmal prüfen, ob cmd_hint jetzt da ist
+    if has_cmd "$cmd_hint"; then
+        print_success "$cmd_hint installed successfully"
+        return 0
     else
-        print_warning "Could not install '$hint' automatically. You may need to install it manually."
+        print_warning "$cmd_hint installation not successful"
+        return 1
     fi
 }
 
 ensure_basic_tools() {
-    # Ensure at least one of curl|wget exists, and unzip exists
     if ! has_cmd curl && ! has_cmd wget; then
-        print_info "Neither curl nor wget found — attempting to install curl"
-        install_pkg_generic curl curl curl curl curl curl
+        print_info "curl oder wget fehlt, versuche curl zu installieren"
+        install_pkg_generic curl curl curl curl curl curl || print_warning "curl konnte nicht installiert werden."
     fi
     if ! has_cmd unzip; then
-        install_pkg_generic unzip unzip unzip unzip unzip unzip
+        install_pkg_generic unzip unzip unzip unzip unzip unzip || print_warning "unzip konnte nicht installiert werden."
     fi
 }
 
-try_java_via_package_manager() {
-    # Try to install Java 17 using package manager friendly names
+try_install_java_pkg() {
+    print_info "Versuche Java 17 via Paketmanager zu installieren..."
     case "$DISTRO" in
-        ubuntu|debian|pop|mint|elementary)
+        ubuntu|debian|pop|linuxmint|elementary)
             sudo apt-get update -y
             sudo apt-get install -y openjdk-17-jre || sudo apt-get install -y openjdk-17-jdk
             ;;
@@ -138,65 +168,56 @@ try_java_via_package_manager() {
             sudo apk add --no-cache openjdk17-jre
             ;;
         *)
+            print_warning "Automatische Java-Installation nicht für $DISTRO unterstützt."
             return 1
             ;;
     esac
 }
 
-install_temurin_fallback() {
-    print_info "Falling back to Temurin (Adoptium) JRE 17 installation..."
+install_temurin() {
+    print_info "Temurin JRE 17 wird als Fallback installiert..."
 
-    ARCH=$(uname -m)
-    case "$ARCH" in
-        x86_64|amd64) TF_ARCH="x64" ;;
-        aarch64|arm64) TF_ARCH="aarch64" ;;
+    arch=$(uname -m)
+    case "$arch" in
+        x86_64|amd64) arch_t="x64" ;;
+        aarch64|arm64) arch_t="aarch64" ;;
         *)
-            print_error "Unrecognized architecture: $ARCH. Manual Java installation required."
+            print_error "Architektur $arch wird nicht unterstützt. Bitte manuell Java 17 installieren."
             return 1
             ;;
     esac
 
-    # Temurin GitHub latest-download path (x64/aarch64 hotspot builds)
-    # Example: OpenJDK17U-jre_x64_linux_hotspot.tar.gz
-    JRE_NAME="OpenJDK17U-jre_${TF_ARCH}_linux_hotspot.tar.gz"
-    DOWNLOAD_URL_TEMURIN="https://github.com/adoptium/temurin17-binaries/releases/latest/download/${JRE_NAME}"
-    OUT="$TEMP_DIR/$JRE_NAME"
+    JRE_TAR="OpenJDK17U-jre_${arch_t}_linux_hotspot.tar.gz"
+    URL="https://github.com/adoptium/temurin17-binaries/releases/latest/download/$JRE_TAR"
+    OUT="$TEMP_DIR/$JRE_TAR"
 
-    print_info "Downloading Temurin JRE 17 for arch=$TF_ARCH ..."
+    print_info "Lade $JRE_TAR herunter..."
     if has_cmd curl; then
-        curl -fL -o "$OUT" "$DOWNLOAD_URL_TEMURIN" || { print_error "Temurin download failed"; return 1; }
+        curl -fL -o "$OUT" "$URL" || { print_error "Download fehlgeschlagen"; return 1; }
     elif has_cmd wget; then
-        wget -O "$OUT" "$DOWNLOAD_URL_TEMURIN" || { print_error "Temurin download failed"; return 1; }
+        wget -O "$OUT" "$URL" || { print_error "Download fehlgeschlagen"; return 1; }
     else
-        print_error "No curl/wget available to download Temurin."
-        return 1
-    fi
-
-    if [ ! -s "$OUT" ]; then
-        print_error "Downloaded Temurin archive is empty."
+        print_error "Weder curl noch wget zum Download vorhanden."
         return 1
     fi
 
     sudo mkdir -p "$TEMURIN_DIR"
     sudo tar -xzf "$OUT" -C /opt
-    # The tarball unpacks to a directory like "jdk-17.0.x+xx-jre" or similar; find it
-    unpacked_dir=$(tar -tzf "$OUT" | head -n1 | cut -f1 -d"/")
-    if [ -z "$unpacked_dir" ]; then
-        print_error "Could not identify unpacked Temurin directory."
+    local_dir=$(tar -tf "$OUT" | head -1 | cut -f1 -d"/")
+    if [ -z "$local_dir" ]; then
+        print_error "Konnte entpacktes Verzeichnis nicht bestimmen."
         return 1
     fi
+    sudo rm -rf "$TEMURIN_DIR"
+    sudo mv "/opt/$local_dir" "$TEMURIN_DIR"
+    sudo chown -R root:root "$TEMURIN_DIR"
 
-    sudo rm -rf "${TEMURIN_DIR}"
-    sudo mv "/opt/${unpacked_dir}" "${TEMURIN_DIR}"
-    sudo chown -R root:root "${TEMURIN_DIR}"
-
-    # Ensure /usr/local/bin/java points to the temurin java
-    if [ -f "${TEMURIN_DIR}/bin/java" ]; then
-        sudo ln -sf "${TEMURIN_DIR}/bin/java" /usr/local/bin/java
-        print_success "Temurin JRE 17 installed to ${TEMURIN_DIR}"
+    if [ -f "$TEMURIN_DIR/bin/java" ]; then
+        sudo ln -sf "$TEMURIN_DIR/bin/java" /usr/local/bin/java
+        print_success "Temurin JRE 17 wurde installiert."
         return 0
     else
-        print_error "Temurin bin/java not found after extraction."
+        print_error "Java-Binary nicht gefunden nach Temurin Installation."
         return 1
     fi
 }
@@ -205,160 +226,129 @@ check_java_version() {
     if ! has_cmd java; then
         return 1
     fi
-    JAVA_VERSION_RAW=$(java -version 2>&1 | awk -F '"' '/version/ {print $2}')
-    JAVA_MAJOR=$(echo "$JAVA_VERSION_RAW" | awk -F. '{print ($1 == 1 ? $2 : $1)}' 2>/dev/null || echo "$JAVA_VERSION_RAW")
-    if [[ "$JAVA_MAJOR" =~ ^[0-9]+$ ]]; then
-        if [ "$JAVA_MAJOR" -ge 17 ]; then
-            print_success "Java $JAVA_VERSION_RAW detected (>=17)"
-            return 0
-        else
-            print_warning "Java $JAVA_VERSION_RAW detected (<17)"
-            return 2
-        fi
+    version=$(java -version 2>&1 | awk -F '"' '/version/ {print $2}')
+    major=$(echo "$version" | awk -F. '{if ($1 == "1") print $2; else print $1}')
+    if [[ $major =~ ^[0-9]+$ ]] && [ "$major" -ge 17 ]; then
+        print_success "Java Version $version gefunden (>=17)."
+        return 0
     else
-        print_warning "Could not parse Java version string: $JAVA_VERSION_RAW"
-        return 3
+        print_warning "Java Version $version gefunden (<17)."
+        return 2
     fi
 }
 
-ensure_java_present() {
-    # 0 = ok, else try to install
+ensure_java() {
     check_java_version
-    rv=$?
+    local rv=$?
     if [ $rv -eq 0 ]; then
         return 0
     fi
 
-    print_warning "Java 17+ not available. Attempting installation via package manager..."
-    # try to install via package manager
-    if try_java_via_package_manager; then
-        print_info "Package-manager install attempted. Re-checking Java..."
-        check_java_version
-        if [ $? -eq 0 ]; then return 0; fi
+    print_warning "Java 17+ nicht gefunden. Versuche automatische Installation..."
+
+    if try_install_java_pkg; then
+        check_java_version && return 0
     fi
 
-    # if here, package manager didn't produce Java 17
-    print_warning "Package manager install didn't provide Java 17. Attempting Temurin fallback..."
-    if install_temurin_fallback; then
-        check_java_version || { print_error "Java still not available after Temurin install."; exit 1; }
-        return 0
+    print_warning "Paketmanager konnte Java 17 nicht installieren, installiere Temurin fallback..."
+
+    if install_temurin; then
+        check_java_version && return 0
     fi
 
-    print_error "Automatic Java installation failed. Please install Java 17+ manually and re-run the script."
+    print_error "Automatische Java-Installation gescheitert. Bitte installiere Java 17+ manuell."
     exit 1
 }
 
-download_and_prepare_pbo() {
-    print_info "Downloading PBO archive..."
-    ZIP_OUT="$TEMP_DIR/pbo-windows.zip"
+download_pbo() {
+    print_info "Lade PBO Archiv herunter..."
+    ZIP="$TEMP_DIR/pbo-windows.zip"
     if has_cmd curl; then
-        curl -fL -o "$ZIP_OUT" "$DOWNLOAD_URL"
+        curl -fL -o "$ZIP" "$DOWNLOAD_URL"
     elif has_cmd wget; then
-        wget -O "$ZIP_OUT" "$DOWNLOAD_URL"
-    fi
-
-    if [ ! -s "$ZIP_OUT" ]; then
-        print_error "PBO download failed or archive is empty."
+        wget -O "$ZIP" "$DOWNLOAD_URL"
+    else
+        print_error "Kein curl oder wget gefunden zum Download."
         exit 1
     fi
-
-    print_info "Extracting archive..."
-    unzip -q "$ZIP_OUT" -d "$TEMP_DIR"
-    if [ ! -d "$TEMP_DIR/pbo-windows" ]; then
-        # maybe archive layout different: try to move extracted files
-        print_warning "Expected directory pbo-windows not present; attempting to find pbo.jar..."
-        found=$(find "$TEMP_DIR" -maxdepth 3 -name "pbo.jar" -print -quit || true)
-        if [ -z "$found" ]; then
-            print_error "pbo.jar not found in the archive. Extraction failed or unexpected layout."
-            exit 1
-        else
-            # create pbo-windows and move all files there
-            mkdir -p "$TEMP_DIR/pbo-windows"
-            # move everything except zip into pbo-windows
-            shopt -s dotglob
-            for f in "$TEMP_DIR"/*; do
-                if [ "$f" != "$ZIP_OUT" ] && [ "$f" != "$TEMP_DIR/pbo-windows" ]; then
-                    mv "$f" "$TEMP_DIR/pbo-windows/" || true
-                fi
-            done
-            shopt -u dotglob
-        fi
+    if [ ! -s "$ZIP" ]; then
+        print_error "Download fehlgeschlagen oder Archiv ist leer."
+        exit 1
     fi
+}
 
-    print_info "Removing Windows executables..."
+extract_pbo() {
+    print_info "Entpacke Archiv..."
+    unzip -q "$TEMP_DIR/pbo-windows.zip" -d "$TEMP_DIR"
+    if [ ! -d "$TEMP_DIR/pbo-windows" ]; then
+        print_warning "pbo-windows Verzeichnis nicht gefunden, versuche alternative Struktur..."
+        found=$(find "$TEMP_DIR" -name "pbo.jar" -print -quit || true)
+        if [ -z "$found" ]; then
+            print_error "pbo.jar nicht gefunden, Archivstruktur unbekannt."
+            exit 1
+        fi
+        mkdir -p "$TEMP_DIR/pbo-windows"
+        shopt -s dotglob
+        for f in "$TEMP_DIR"/*; do
+            if [[ "$f" != "$TEMP_DIR/pbo-windows.zip" && "$f" != "$TEMP_DIR/pbo-windows" ]]; then
+                mv "$f" "$TEMP_DIR/pbo-windows/"
+            fi
+        done
+        shopt -u dotglob
+    fi
+    print_info "Entferne Windows-Executables..."
     find "$TEMP_DIR" -name "*.exe" -type f -delete
 }
 
 install_pbo() {
-    print_info "Installing to $INSTALL_DIR ..."
-    # remove old
+    print_info "Installiere PBO nach $INSTALL_DIR..."
     if [ -d "$INSTALL_DIR" ]; then
-        print_warning "Existing installation found; removing..."
+        print_warning "Alte Installation gefunden, lösche..."
         rm -rf "$INSTALL_DIR"
     fi
     mkdir -p "$(dirname "$INSTALL_DIR")"
-    mv "$TEMP_DIR/pbo-windows" "$INSTALL_DIR" || (mkdir -p "$INSTALL_DIR" && mv "$TEMP_DIR"/* "$INSTALL_DIR"/ || true)
+    mv "$TEMP_DIR/pbo-windows" "$INSTALL_DIR"
+}
 
-    print_info "Creating desktop entry..."
+create_desktop_entry() {
+    print_info "Erstelle Desktop-Verknüpfung..."
+
     mkdir -p "$(dirname "$DESKTOP_FILE")"
+
     cat > "$DESKTOP_FILE" <<EOF
 [Desktop Entry]
 Version=1.0
-Type=Application
-Name=$APP_NAME
-Comment=PBO
-Exec=java -jar $INSTALL_DIR/pbo.jar
-Path=$INSTALL_DIR/
-Icon=$INSTALL_DIR/assets/icons/pbo_icon.ico
+Name=Pokemon Blaze Online
+Comment=Pokemon Blaze Online Client
+Exec=java -jar "$INSTALL_DIR/pbo.jar"
+Icon=$INSTALL_DIR/pbo.png
 Terminal=false
+Type=Application
 Categories=Game;
 EOF
+
     chmod +x "$DESKTOP_FILE"
-    if has_cmd update-desktop-database; then
-        update-desktop-database "$HOME/.local/share/applications/" || true
-    fi
-
-    print_success "$APP_NAME installed successfully!"
-    print_info "Installation directory: $INSTALL_DIR"
+    print_success "Desktop-Verknüpfung erstellt: $DESKTOP_FILE"
 }
 
-uninstall_pbo() {
-    print_info "Uninstalling $APP_NAME ..."
-    if [ -d "$INSTALL_DIR" ]; then
-        rm -rf "$INSTALL_DIR"
-        print_success "Removed $INSTALL_DIR"
-    else
-        print_warning "No installation directory found at $INSTALL_DIR"
-    fi
-    if [ -f "$DESKTOP_FILE" ]; then
-        rm -f "$DESKTOP_FILE"
-        print_success "Removed desktop file $DESKTOP_FILE"
-    fi
-    if has_cmd update-desktop-database; then
-        update-desktop-database "$HOME/.local/share/applications/" || true
-    fi
-}
+main() {
+    print_info "Starte $APP_NAME Installer..."
 
-# --------------------
-# Main
-# --------------------
-if [[ "${1:-}" == "--uninstall" || "${1:-}" == "-u" ]]; then
     detect_distro
-    uninstall_pbo
-    exit 0
-fi
 
-# allow --force to bypass some checks
-if [[ "${1:-}" == "--force" || "${2:-}" == "--force" ]]; then
-    FORCE=true
-fi
+    ensure_basic_tools
 
-print_info "Starting $APP_NAME installer..."
-detect_distro
-ensure_basic_tools
-ensure_java_present
-download_and_prepare_pbo
-install_pbo
-print_success "Installation completed. Viel Spaß!"
+    ensure_java
 
-# End of script
+    download_pbo
+
+    extract_pbo
+
+    install_pbo
+
+    create_desktop_entry
+
+    print_success "$APP_NAME wurde erfolgreich installiert!"
+}
+
+main
