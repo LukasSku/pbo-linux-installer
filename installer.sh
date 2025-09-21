@@ -227,9 +227,7 @@ install_pbo() {
     print_info "Creating desktop entry..."
     mkdir -p "$(dirname "$DESKTOP_FILE")"
 
-    # Use 48.png icon directly
-    ICON_PATH="$INSTALL_DIR/assets/icons/48.png"
-    print_info "Using icon: $ICON_PATH"
+    print_info "Using icon: $HOME/Applications/pbo/assets/icons/48.png"
 
     # Create desktop entry with proper exec path
     cat > "$DESKTOP_FILE" << EOF
@@ -238,39 +236,68 @@ Version=1.0
 Type=Application
 Name=$APP_NAME
 Comment=Pokemon Blaze Online Game
-Exec=bash -c 'cd "$INSTALL_DIR" && java -jar pbo.jar'
-Path=$INSTALL_DIR/
-Icon=$ICON_PATH
+Exec=bash -c 'cd "$HOME/Applications/pbo" && java -jar pbo.jar'
+Path=$HOME/Applications/pbo/
+Icon=$HOME/Applications/pbo/assets/icons/48.png
 Terminal=false
 Categories=Game;
 StartupWMClass=pbo
 StartupNotify=true
+MimeType=application/x-java-archive;
 EOF
 
     chmod +x "$DESKTOP_FILE"
+
+    # Restart desktop environment services to recognize new application
+    if command -v systemctl >/dev/null 2>&1; then
+        # For systemd-based desktop environments
+        systemctl --user daemon-reload 2>/dev/null || true
+    fi
 
     # Update desktop database if available
     if command -v update-desktop-database >/dev/null 2>&1; then
         update-desktop-database "$HOME/.local/share/applications/" 2>/dev/null || true
     fi
 
-    # Try to update icon cache
+    # Force refresh icon cache
     if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+        gtk-update-icon-cache -f -t "$HOME/.icons/" 2>/dev/null || true
         gtk-update-icon-cache -f -t "$HOME/.local/share/icons/" 2>/dev/null || true
     fi
+
+    # For KDE Plasma
+    if command -v kbuildsycoca5 >/dev/null 2>&1; then
+        kbuildsycoca5 2>/dev/null || true
+    elif command -v kbuildsycoca6 >/dev/null 2>&1; then
+        kbuildsycoca6 2>/dev/null || true
+    fi
+
+    # Make the desktop file executable and try to register it
+    gio set "$DESKTOP_FILE" metadata::trusted true 2>/dev/null || true
 
     print_success "$APP_NAME installed successfully!"
     print_info "Installation directory: $INSTALL_DIR"
     print_info "Desktop file: $DESKTOP_FILE"
+    print_info "Icon path: $HOME/Applications/pbo/assets/icons/48.png"
     print_info "You can now find '$APP_NAME' in your application menu"
     
-    # Test if Java can run the jar
-    print_info "Testing Java execution..."
+    # Test if the application can be started manually
+    print_info "Testing manual execution..."
     cd "$INSTALL_DIR"
-    if timeout 5s java -jar pbo.jar --help >/dev/null 2>&1 || timeout 5s java -jar pbo.jar --version >/dev/null 2>&1; then
-        print_success "Java execution test passed"
+    if java -jar pbo.jar --help >/dev/null 2>&1 || java -jar pbo.jar --version >/dev/null 2>&1 || timeout 3s java -jar pbo.jar >/dev/null 2>&1; then
+        print_success "Manual execution test passed"
     else
-        print_warning "Could not verify Java execution. The application might still work."
+        print_warning "Manual execution test failed, but the application might still work"
+        print_info "You can test manually with: cd '$INSTALL_DIR' && java -jar pbo.jar"
+    fi
+
+    # Verify icon exists
+    if [ -f "$HOME/Applications/pbo/assets/icons/48.png" ]; then
+        print_success "Icon file found and ready"
+    else
+        print_warning "Icon file not found at expected location"
+        print_info "Available icons:"
+        ls -la "$HOME/Applications/pbo/assets/icons/" 2>/dev/null || print_warning "Icons directory not found"
     fi
 }
 
